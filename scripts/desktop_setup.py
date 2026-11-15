@@ -11,6 +11,7 @@ Python runtime, makes sure the UI bundle exists, then starts Sasha Maid.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import os
 import platform
 import shutil
@@ -69,8 +70,18 @@ def ensure_ui() -> None:
     npm = shutil.which("npm")
     if npm and (ROOT / "package.json").exists():
         say("3/4", "Building the interface with Vite")
-        if not (ROOT / "node_modules").exists():
-            run([npm, "install"])
+        modules = ROOT / "node_modules"
+        lockfile = ROOT / "package-lock.json"
+        stamp = modules / ".sasha-lock-sha256"
+        lock_hash = hashlib.sha256(lockfile.read_bytes()).hexdigest() if lockfile.exists() else ""
+        required = ("vite", "vite-plugin-singlefile", "@vitejs/plugin-react", "@tailwindcss/vite", "react", "react-dom")
+        missing = any(not (modules / package / "package.json").is_file() for package in required)
+        stale = not stamp.exists() or stamp.read_text(encoding="utf-8").strip() != lock_hash
+        if not modules.exists() or missing or stale:
+            say("3/4", "Installing the locked UI dependencies")
+            run([npm, "ci"] if lockfile.exists() else [npm, "install"])
+            modules.mkdir(exist_ok=True)
+            stamp.write_text(lock_hash, encoding="utf-8")
         run([npm, "run", "build"])
     elif built.exists():
         say("3/4", "Node.js not found — using the interface bundle already in dist/")
