@@ -7,6 +7,8 @@ import android.database.Cursor;
 import android.net.Uri;
 import android.provider.DocumentsContract;
 import android.provider.OpenableColumns;
+import android.util.Base64;
+import android.webkit.MimeTypeMap;
 
 import com.getcapacitor.JSArray;
 import com.getcapacitor.JSObject;
@@ -20,6 +22,7 @@ import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
 
+import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
 import java.security.MessageDigest;
 import java.util.ArrayList;
@@ -36,6 +39,7 @@ public class FileAccessPlugin extends Plugin {
     private static final String PREFS = "sasha_android_files";
     private static final String ROOTS = "roots";
     private static final String HISTORY = "history";
+    private static final int MAX_PREVIEW_BYTES = 32 * 1024 * 1024;
     private final ExecutorService worker = Executors.newSingleThreadExecutor();
     private final Map<Integer, ScannedFile> scanned = new HashMap<>();
     private int nextId = 1;
@@ -212,6 +216,40 @@ public class FileAccessPlugin extends Plugin {
             group.put("files", rows); groups.put(group);
         }
         return groups;
+    }
+
+    @PluginMethod
+    public void preview(PluginCall call) {
+        Integer id = call.getInt("id");
+        if (id == null) { call.reject("A scanned file id is required."); return; }
+        worker.execute(() -> {
+            try {
+                ScannedFile file = scanned.get(id);
+                if (file == null) throw new IllegalArgumentException("Scan this folder again before previewing the file.");
+                ByteArrayOutputStream bytes = new ByteArrayOutputStream((int) Math.min(file.size, 1024 * 1024));
+                try (InputStream input = getContext().getContentResolver().openInputStream(file.uri)) {
+                    if (input == null) throw new IllegalStateException("Android could not read this file.");
+                    byte[] buffer = new byte[32 * 1024]; int count; int total = 0;
+                    while ((count = input.read(buffer)) != -1) {
+                        total += count;
+                        if (total > MAX_PREVIEW_BYTES) throw new IllegalArgumentException("Android in-app preview is limited to 32 MiB; use another viewer for larger files.");
+                        bytes.write(buffer, 0, count);
+                    }
+                }
+                String mime = file.mime;
+                if (mime == null || mime.isEmpty() || "application/octet-stream".equals(mime)) {
+                    String extension = file.name.contains(".") ? file.name.substring(file.name.lastIndexOf('.') + 1).toLowerCase(Locale.ROOT) : "";
+                    String guessed = MimeTypeMap.getSingleton().getMimeTypeFromExtension(extension);
+                    mime = guessed == null ? "application/octet-stream" : guessed;
+                }
+                JSObject result = new JSObject();
+                result.put("name", file.name); result.put("mime", mime); result.put("size", bytes.size());
+                result.put("base64", Base64.encodeToString(bytes.toByteArray(), Base64.NO_WRAP));
+                call.resolve(result);
+            } catch (Exception error) {
+                call.reject("Could not preview file: " + error.getMessage(), "PREVIEW_FAILED", error);
+            }
+        });
     }
 
     @PluginMethod

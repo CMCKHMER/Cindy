@@ -13,12 +13,14 @@ import asyncio
 import csv
 import io
 import json
+import mimetypes
 import os
 import time
+from urllib.parse import quote
 from pathlib import Path
 from typing import Literal
 
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -197,6 +199,104 @@ def files(q: str = "", kind: str = "", min_size: int = 0, older_than: int = 0,
     sql += f" ORDER BY {order} LIMIT ? OFFSET ?"
     args += [per_page, (page - 1) * per_page]
     return [dict(r) for r in store.db.execute(sql, args)]
+
+
+PREVIEW_EXTENSIONS = {
+    "image": {"jpg", "jpeg", "png", "gif", "webp", "bmp", "avif"},
+    "audio": {"mp3", "m4a", "aac", "ogg", "oga", "wav", "flac", "opus"},
+    "video": {"mp4", "m4v", "webm", "ogv", "ogg", "mov"},
+    "pdf": {"pdf"},
+    "text": {"txt", "md", "csv", "json", "log", "py", "js", "ts", "tsx", "css", "html", "xml", "yaml", "yml", "toml", "sh"},
+}
+
+
+@app.get("/api/files/{file_id}/preview")
+def preview_file(file_id: int, request: Request, download: bool = False):
+    """Stream a selected indexed file for an inline preview, including audio/video byte ranges."""
+    row = store.db.execute(
+        """SELECT f.path, f.name, f.ext, f.status, r.path AS root_path
+           FROM files f JOIN roots r ON r.id=f.root_id WHERE f.id=?""", (file_id,)
+    ).fetchone()
+    if not row or row["status"] != "indexed":
+        raise HTTPException(404, "Indexed file not found.")
+    try:
+        root = Path(row["root_path"]).resolve(strict=True)
+        path = Path(row["path"]).resolve(strict=True)
+        path.relative_to(root)
+        guard(path)
+    except (OSError, ValueError, ProtectedPathError):
+        raise HTTPException(404, "The file is no longer available in its indexed folder.")
+    if not path.is_file():
+        raise HTTPException(404, "File not found.")
+
+    ext = (row["ext"] or path.suffix.lstrip(".")).lower()
+    preview_kind = next((kind for kind, extensions in PREVIEW_EXTENSIONS.items() if ext in extensions), None)
+    if not download and preview_kind is None:
+        raise HTTPException(415, "No safe in-app preview is available for this file type. Download it to open with another app.")
+    media_type = "application/octet-stream" if download and preview_kind is None else mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+    if preview_kind == "text":
+        media_type = "text/plain; charset=utf-8"
+    elif preview_kind == "pdf":
+        media_type = "application/pdf"
+    elif preview_kind == "image" and media_type == "application/octet-stream":
+        media_type = "image/jpeg" if ext in {"jpg", "jpeg"} else f"image/{ext}"
+    elif preview_kind == "audio" and media_type == "application/octet-stream":
+        media_type = {"mp3": "audio/mpeg", "m4a": "audio/mp4", "oga": "audio/ogg", "opus": "audio/opus"}.get(ext, f"audio/{ext}")
+    elif preview_kind == "video" and media_type == "application/octet-stream":
+        media_type = {"m4v": "video/mp4", "ogv": "video/ogg", "mov": "video/quicktime"}.get(ext, f"video/{ext}")
+
+    size = path.stat().st_size
+    if preview_kind == "text" and size > 2 * 1024 * 1024 and not download:
+        raise HTTPException(413, "Text preview is limited to 2 MiB. Download the file to inspect it.")
+    start, end = 0, size - 1
+    status_code = 200
+    range_header = request.headers.get("range")
+    if range_header:
+        unit, _, value = range_header.partition("=")
+        if unit.strip() != "bytes" or "," in value or size == 0:
+            raise HTTPException(416, "Requested byte range is not satisfiable.", headers={"Content-Range": f"bytes */{size}"})
+        first, dash, last = value.strip().partition("-")
+        try:
+            if not dash:
+                raise ValueError("missing range separator")
+            if first:
+                start = int(first)
+                end = min(int(last), size - 1) if last else size - 1
+            else:
+                suffix = int(last)
+                if suffix <= 0:
+                    raise ValueError("invalid suffix range")
+                start = max(0, size - suffix)
+                end = size - 1
+        except ValueError:
+            raise HTTPException(416, "Requested byte range is not satisfiable.", headers={"Content-Range": f"bytes */{size}"})
+        if start < 0 or start >= size or end < start:
+            raise HTTPException(416, "Requested byte range is not satisfiable.", headers={"Content-Range": f"bytes */{size}"})
+        status_code = 206
+
+    length = max(0, end - start + 1)
+    headers = {
+        "Accept-Ranges": "bytes",
+        "Content-Length": str(length),
+        "X-Content-Type-Options": "nosniff",
+        "Cache-Control": "no-store",
+        "Content-Disposition": f"{('attachment' if download else 'inline')}; filename*=UTF-8''{quote(path.name)}",
+    }
+    if status_code == 206:
+        headers["Content-Range"] = f"bytes {start}-{end}/{size}"
+
+    def stream_file():
+        with path.open("rb") as handle:
+            handle.seek(start)
+            remaining = length
+            while remaining:
+                chunk = handle.read(min(1024 * 1024, remaining))
+                if not chunk:
+                    break
+                remaining -= len(chunk)
+                yield chunk
+
+    return StreamingResponse(stream_file(), status_code=status_code, media_type=media_type, headers=headers)
 
 
 @app.get("/api/duplicates")
