@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
+import { Capacitor } from "@capacitor/core";
 import { Chip, Icon, Section } from "../components/ui";
+import LiveAndroid from "./LiveAndroid";
 import { fmtBytes, fmtDate } from "../lib/core";
 
 type Root = { id: number; path: string; recursive: number; watch: number; enabled: number; last_scan: string | null };
@@ -29,7 +31,7 @@ async function issueApproval() {
   return result.approval_token;
 }
 
-export default function Live() {
+function LiveDesktop() {
   const [online, setOnline] = useState(false);
   const [roots, setRoots] = useState<Root[]>([]);
   const [files, setFiles] = useState<FileRow[]>([]);
@@ -222,4 +224,9 @@ export default function Live() {
       {!files.length ? <div className="py-8 text-center text-[12px]" style={{ color: "var(--muted)" }}>No files indexed yet. Add a folder and start a scan.</div> : <div className="overflow-x-auto"><table className="w-full text-left text-[11px]"><thead><tr className="label"><th className="p-2"><input type="checkbox" aria-label="Select current page" checked={!!shownFiles.length && shownFiles.every(file => selected.includes(file.id))} onChange={togglePage} /></th><th className="p-2">Name</th><th className="p-2">Category</th><th className="p-2 text-right">Size</th><th className="p-2">Modified</th><th className="p-2">Status</th></tr></thead><tbody>{shownFiles.map(file => <tr key={file.id} className="border-t" style={{ borderColor: "var(--line)" }}><td className="p-2"><input type="checkbox" checked={selected.includes(file.id)} onChange={() => toggleOne(file.id)} aria-label={`Select ${file.name}`} /></td><td className="p-2"><div className="font-medium truncate max-w-[420px]" title={file.path}>{file.name}</div><div className="mono truncate max-w-[420px] text-[9px]" style={{ color: "var(--faint)" }}>{file.path}</div></td><td className="p-2">{file.category}</td><td className="p-2 text-right mono">{fmtBytes(file.size)}</td><td className="p-2 whitespace-nowrap">{fmtDate(file.mtime * 1000)}</td><td className="p-2">{file.broken_kind ? <span style={{ color: "var(--danger)" }}>{file.broken_kind}</span> : <span style={{ color: "var(--success)" }}>{file.status}</span>}</td></tr>)}</tbody></table><div className="flex items-center justify-end gap-2 pt-3"><button className="btn btn-xs" onClick={() => setPage(Math.max(0, page - 1))} disabled={page === 0}>Previous</button><span className="mono text-[10px]">{page + 1} / {pageCount}</span><button className="btn btn-xs" onClick={() => setPage(Math.min(pageCount - 1, page + 1))} disabled={page + 1 >= pageCount}>Next</button></div></div>}
     </Section>
   </div>;
+}
+
+export default function Live() {
+  if (Capacitor.isNativePlatform() && Capacitor.getPlatform() === "android") return <LiveAndroid />;
+  return <LiveDesktop />;
 }
