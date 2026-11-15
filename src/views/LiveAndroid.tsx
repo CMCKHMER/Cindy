@@ -16,7 +16,7 @@ export default function LiveAndroid() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
-  const [preview, setPreview] = useState<{ file: AndroidFile; src: string; textContent?: string } | null>(null);
+  const [preview, setPreview] = useState<{ file: AndroidFile; src: string; textContent?: string; sourceError?: string } | null>(null);
 
   const refreshRoots = useCallback(async () => {
     const result = await AndroidFiles.getRoots();
@@ -103,7 +103,7 @@ export default function LiveAndroid() {
         ? new TextDecoder().decode(Uint8Array.from(atob(result.base64), character => character.charCodeAt(0)))
         : undefined;
       setPreview({ file, src: `data:${result.mime};base64,${result.base64}`, textContent });
-    } catch (cause) { setError(errorMessage(cause)); }
+    } catch (cause) { setPreview({ file, src: "", sourceError: errorMessage(cause) }); }
     finally { setBusy(false); }
   };
 
@@ -137,7 +137,7 @@ export default function LiveAndroid() {
       {selected.length > 0 && <div className="flex flex-wrap items-center gap-2 mb-3 inset p-2.5"><span className="text-[11px] flex-1">{selected.length} selected</span><button className="btn btn-xs" onClick={() => void apply("rename")} disabled={busy}>Rename</button><button className="btn btn-xs" onClick={() => void apply("move")} disabled={busy}>Organize</button><button className="btn btn-xs" onClick={() => void apply("archive")} disabled={busy}>Move to Review</button><button className="btn btn-xs btn-danger" onClick={() => void apply("delete")} disabled={busy}>Trash</button></div>}
       {!files.length ? <div className="py-8 text-center text-[12px]" style={{ color: "var(--muted)" }}>Choose a folder and scan to list files.</div> : <div className="overflow-x-auto"><table className="w-full text-left text-[11px] min-w-[580px]"><thead><tr className="label"><th className="p-2"><input type="checkbox" aria-label="Select all visible files" checked={!!visible.length && selected.length === visible.length} onChange={toggleAll} /></th><th className="p-2">Preview</th><th className="p-2">Name</th><th className="p-2">Category</th><th className="p-2 text-right">Size</th><th className="p-2">Modified</th></tr></thead><tbody>{visible.map(file => <tr key={file.id} className="border-t" style={{ borderColor: "var(--line)" }}><td className="p-2"><input type="checkbox" checked={selected.includes(file.id)} onChange={() => setSelected(current => current.includes(file.id) ? current.filter(id => id !== file.id) : [...current, file.id])} aria-label={`Select ${file.name}`} /></td><td className="p-2"><button className="btn btn-xs" onClick={() => void openPreview(file)} disabled={busy} aria-label={`Preview ${file.name}`}><Icon name="eye" size={12} />View</button></td><td className="p-2"><div className="font-medium break-all max-w-[420px]">{file.name}</div><div className="mono break-all max-w-[420px] text-[9px]" style={{ color: "var(--faint)" }}>{file.path}</div></td><td className="p-2">{file.category}</td><td className="p-2 text-right mono whitespace-nowrap">{fmtBytes(file.size)}</td><td className="p-2 whitespace-nowrap">{fmtDate(file.mtime * 1000)}</td></tr>)}</tbody></table></div>}
     </Section>
-    {preview && <FilePreview file={preview.file} src={preview.src} downloadUrl={preview.src} textContent={preview.textContent} onClose={() => setPreview(null)} />}
+    {preview && <FilePreview file={preview.file} src={preview.src} downloadUrl={preview.src} textContent={preview.textContent} sourceError={preview.sourceError} openExternal={() => AndroidFiles.openExternal({ id: preview.file.id }).then(() => undefined)} onClose={() => setPreview(null)} />}
   </div>;
 }
 
