@@ -2,7 +2,7 @@ fastapi==0.115.6
 uvicorn[standard]==0.34.0
 pydantic==2.10.4
 watchdog==6.0.0
-Pillow==11.1.0
+Pillow==13.0.0
 opencv-python-headless==4.11.0.86
 numpy==2.2.1
 onnxruntime==1.20.1          # swap for onnxruntime-gpu / coreml builds when available
@@ -10,9 +10,9 @@ faiss-cpu==1.9.0.post1
 imagehash==4.3.2
 pikepdf==9.5.1
 send2trash==1.8.3
-python-multipart==0.0.20
+python-multipart==0.0.31
 PySide6==6.8.1 ; platform_system != "Linux" or platform_machine != "aarch64"
 PySide6-Addons==6.8.1 ; platform_system != "Linux" or platform_machine != "aarch64"
-pytest==8.3.4
+pytest==9.0.3
 pytest-cov==6.0.0
 httpx==0.28.1
