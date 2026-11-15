@@ -36,8 +36,9 @@ into the Android project.
 
 Android file providers vary: cloud-backed, read-only, or third-party providers
 may not support every rename/move operation. The app reports provider failures
-instead of silently pretending the operation succeeded. Scanning large files
-for exact duplicates can use significant time and battery.
+instead of silently pretending the operation succeeded. In-app media preview is
+limited to 32 MiB per file on Android; scanning large files for exact duplicates
+can use significant time and battery.
 
 ---
 
@@ -163,7 +164,8 @@ docker compose up --build
 
 - `src/` — React + Vite + Tailwind UI: seeded demo workspace plus a separate
   **Live disk** screen connected to the local API for real scans, duplicate review,
-  approved file operations, and undo; also analytics, explorer, reports and settings.
+  inline image/audio/video/PDF/text previews, approved file operations, and undo;
+  also analytics, explorer, reports and settings.
 - `src/lib/engine.ts` — classification, naming, SHA-256 / pHash / text similarity,
   natural-language intents, benchmark, live diagnostics.
 - `src/state/store.tsx` — operation journal, reversible patches, resumable scan,
