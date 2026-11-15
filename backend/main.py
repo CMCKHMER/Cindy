@@ -93,7 +93,7 @@ class RenameIn(BaseModel):
 
 
 class FileActionIn(BaseModel):
-    action: Literal["delete", "archive"]
+    action: Literal["delete", "archive", "permanent_delete"]
     ids: list[int] = Field(default_factory=list)
     approval_token: str | None = None
 
@@ -370,6 +370,8 @@ def resolve_files(body: FileActionIn):
     if body.action == "delete":
         return store.apply("delete", body.ids, approval_token="server", label="Approved file removal",
                            action=lambda p, r: trash(p))
+    if body.action == "permanent_delete":
+        return store.permanently_delete(body.ids, approval_token="server")
     return store.apply("archive", body.ids, approval_token="server", label="Approved move to review",
                        action=lambda p, r: to_review(p))
 
@@ -408,6 +410,7 @@ def apply_rename(body: RenameIn):
     def act(p: Path, row):
         ext = p.suffix.lstrip(".")
         target = p.parent / unique_name(p.parent, normalize_name(Path(names[row["id"]]).stem, ext))
+        guard(target)
         p.rename(target)
         return target
 
@@ -478,7 +481,7 @@ def report(format: Literal["json", "csv", "pdf"] = "json"):
     summary = {
         "files_moved": sum(o["kind"] == "move" and not o["undone"] for o in ops),
         "files_renamed": sum(o["kind"] == "rename" and not o["undone"] for o in ops),
-        "storage_saved": sum(o["bytes"] for o in ops if o["kind"] == "delete" and not o["undone"]),
+        "storage_saved": sum(o["bytes"] for o in ops if o["kind"] in {"delete", "permanent_delete"} and not o["undone"]),
         "duplicate_groups": len(store.duplicates()),
         "broken_files": len(broken()),
     }

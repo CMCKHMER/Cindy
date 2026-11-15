@@ -62,7 +62,7 @@ function LiveDesktop() {
     }
     setRoots(rootRows);
     setGroups(groupRows);
-    setFiles(allFiles.filter(file => !["delete", "deleted", "archive", "archived"].includes(file.status)));
+    setFiles(allFiles.filter(file => !["delete", "deleted", "archive", "archived", "permanently_deleted"].includes(file.status)));
     setSelected([]);
   }, []);
 
@@ -135,7 +135,7 @@ function LiveDesktop() {
     finally { setBusy(false); }
   };
 
-  const runOperation = async (operation: "delete" | "archive" | "move" | "rename") => {
+  const runOperation = async (operation: "delete" | "archive" | "move" | "rename" | "permanent_delete") => {
     if (!selected.length) return;
     const selectedFiles = files.filter(file => selected.includes(file.id));
     if (operation === "delete" && !window.confirm(`Move ${selected.length} selected file(s) to Sasha Maid's recoverable trash?`)) return;
@@ -150,6 +150,12 @@ function LiveDesktop() {
       if (!window.confirm(`Apply ${renameItems.length} approved rename(s)? Existing files will not be overwritten.`)) return;
     }
     if (operation === "move" && !window.confirm(`Move ${selected.length} file(s) to type-based folders under Sasha Maid's local library?`)) return;
+    if (operation === "permanent_delete") {
+      const previewNames = selectedFiles.slice(0, 6).map(file => `• ${file.name}`).join("\n");
+      const more = selectedFiles.length > 6 ? `\\n…and ${selectedFiles.length - 6} more` : "";
+      if (!window.confirm(`PERMANENT DELETE: ${selected.length} file(s) will be removed without Sasha Maid trash or a backup. This cannot be undone.\\n\\n${previewNames}${more}`)) return;
+      if (window.prompt('Type DELETE PERMANENTLY to confirm:') !== "DELETE PERMANENTLY") return;
+    }
     setBusy(true); setError(""); setNotice("");
     try {
       const approval_token = await issueApproval();
@@ -157,11 +163,17 @@ function LiveDesktop() {
         await api("/api/rename/apply", { method: "POST", body: JSON.stringify({ items: renameItems, approval_token }) });
       } else if (operation === "move") {
         await api("/api/organize/apply", { method: "POST", body: JSON.stringify({ action: "archive", ids: selected, approval_token }) });
+      } else if (operation === "permanent_delete") {
+        const result = await api<{ files: number; failed: { name: string; error: string }[] }>("/api/files/resolve", { method: "POST", body: JSON.stringify({ action: operation, ids: selected, approval_token }) });
+        await refresh();
+        const failures = result.failed.length ? ` ${result.failed.length} file(s) could not be removed: ${result.failed.map(item => `${item.name}: ${item.error}`).join("; ")}` : "";
+        setNotice(`Permanently deleted ${result.files} file(s). This action cannot be undone.${failures}`);
+        return;
       } else {
         await api("/api/files/resolve", { method: "POST", body: JSON.stringify({ action: operation, ids: selected, approval_token }) });
       }
       await refresh();
-      setNotice(`${operation === "move" ? "Moved" : operation === "rename" ? "Renamed" : operation === "delete" ? "Sent to trash" : "Archived"} files successfully.`);
+      setNotice(`${operation === "move" ? "Moved" : operation === "rename" ? "Renamed" : operation === "delete" ? "Sent to recoverable trash" : "Moved to Review"} files successfully.`);
     } catch (cause) { setError(cause instanceof Error ? cause.message : "File operation failed."); }
     finally { setBusy(false); }
   };
@@ -169,8 +181,8 @@ function LiveDesktop() {
   const undoLatest = async () => {
     setBusy(true); setError(""); setNotice("");
     try {
-      const report = await api<{ operations: { id: number; undone: number; label: string }[] }>("/api/report?format=json");
-      const last = report.operations.find(operation => !operation.undone);
+      const report = await api<{ operations: { id: number; undone: number; label: string; kind: string }[] }>("/api/report?format=json");
+      const last = report.operations.find(operation => !operation.undone && operation.kind !== "permanent_delete");
       if (!last) { setNotice("There are no file operations to undo."); return; }
       if (!window.confirm(`Undo “${last.label}”?`)) return;
       await api(`/api/undo/${last.id}`, { method: "POST" });
@@ -191,7 +203,7 @@ function LiveDesktop() {
     {error && <div className="card p-3 text-[12px]" style={{ borderColor: "var(--danger)", color: "var(--danger)" }} role="alert">{error}</div>}
     {notice && <div className="card p-3 text-[12px]" style={{ borderColor: "var(--success)", color: "var(--success)" }} role="status">{notice}</div>}
 
-    <Section title="Folders on this computer" sub="Choose roots to index. System-critical folders are blocked by the service." right={<Chip color="var(--success)"><Icon name="shield" size={11} />local API connected</Chip>}>
+    <Section title="Folders on this computer" sub="Choose roots to index. System, credential, and app-config paths are excluded/protected. Nothing is treated as 'unneeded' automatically." right={<Chip color="var(--success)"><Icon name="shield" size={11} />local API connected</Chip>}>
       <form className="flex flex-wrap gap-2" onSubmit={addRoot}>
         <input className="field flex-1 min-w-[240px] mono text-[12px]" value={folderPath} onChange={event => setFolderPath(event.target.value)} placeholder="Absolute path, e.g. /home/you/Downloads" aria-label="Folder path" />
         <button className="btn btn-primary btn-sm" disabled={busy || !folderPath.trim()}><Icon name="folder" size={13} />Add folder</button>
@@ -212,7 +224,7 @@ function LiveDesktop() {
         const copies = group.files.filter(file => file.id !== keep?.id);
         return <div key={`${group.kind}-${group.files.map(file => file.id).join("-")}`} className="inset p-3 flex flex-wrap items-center gap-3">
           <div className="min-w-0 flex-1"><div className="text-[12px] font-semibold">Group {index + 1} · {group.kind} · {fmtBytes(group.files[0]?.size ?? 0)} each</div><div className="mono text-[10px] mt-1 truncate" style={{ color: "var(--muted)" }}>{group.files.map(file => file.path).join(" · ")}</div><div className="text-[10px] mt-1" style={{ color: "var(--success)" }}>Keep suggested: {keep?.name}</div></div>
-          <button className="btn btn-xs" disabled={!copies.length || busy} onClick={() => { setSelected(copies.map(file => file.id)); setQuery(""); setNotice(`${copies.length} duplicate copy/copies selected. Use Trash after reviewing the file list.`); }}>{copies.length} copies · select</button>
+          <button className="btn btn-xs" disabled={!copies.length || busy} onClick={() => { setSelected(copies.map(file => file.id)); setQuery(""); setNotice(`${copies.length} duplicate copy/copies selected. Use Trash or Delete permanently after reviewing the file list.`); }}>{copies.length} copies · select</button>
         </div>;
       })}</div>
     </Section>}
@@ -222,7 +234,7 @@ function LiveDesktop() {
         <input className="field flex-1 min-w-[220px] text-[12px]" value={query} onChange={event => { setQuery(event.target.value); setPage(0); }} placeholder="Search actual file names and paths" />
         <button className="btn btn-sm" onClick={() => void refresh()} disabled={busy}><Icon name="refresh" size={12} />Refresh</button>
       </div>
-      {selected.length > 0 && <div className="flex flex-wrap items-center gap-2 mb-3 inset p-2.5"><span className="text-[11px] flex-1">{selected.length} selected</span><button className="btn btn-xs" disabled={busy} onClick={() => void runOperation("rename")}>Rename</button><button className="btn btn-xs" disabled={busy} onClick={() => void runOperation("move")}>Organize</button><button className="btn btn-xs" disabled={busy} onClick={() => void runOperation("archive")}>Move to Review</button><button className="btn btn-xs btn-danger" disabled={busy} onClick={() => void runOperation("delete")}>Trash</button></div>}
+      {selected.length > 0 && <div className="flex flex-wrap items-center gap-2 mb-3 inset p-2.5"><span className="text-[11px] flex-1">{selected.length} selected</span><button className="btn btn-xs" disabled={busy} onClick={() => void runOperation("rename")}>Rename</button><button className="btn btn-xs" disabled={busy} onClick={() => void runOperation("move")}>Organize</button><button className="btn btn-xs" disabled={busy} onClick={() => void runOperation("archive")}>Move to Review</button><button className="btn btn-xs btn-danger" disabled={busy} onClick={() => void runOperation("delete")}>Trash</button><button className="btn btn-xs btn-danger" disabled={busy} onClick={() => void runOperation("permanent_delete")}>Delete permanently</button></div>}
       {!files.length ? <div className="py-8 text-center text-[12px]" style={{ color: "var(--muted)" }}>No files indexed yet. Add a folder and start a scan.</div> : <div className="overflow-x-auto"><table className="w-full text-left text-[11px]"><thead><tr className="label"><th className="p-2"><input type="checkbox" aria-label="Select current page" checked={!!shownFiles.length && shownFiles.every(file => selected.includes(file.id))} onChange={togglePage} /></th><th className="p-2">Preview</th><th className="p-2">Name</th><th className="p-2">Category</th><th className="p-2 text-right">Size</th><th className="p-2">Modified</th><th className="p-2">Status</th></tr></thead><tbody>{shownFiles.map(file => <tr key={file.id} className="border-t" style={{ borderColor: "var(--line)" }}><td className="p-2"><input type="checkbox" checked={selected.includes(file.id)} onChange={() => toggleOne(file.id)} aria-label={`Select ${file.name}`} /></td><td className="p-2"><button className="btn btn-xs" onClick={() => setPreviewFile(file)} aria-label={`Preview ${file.name}`}><Icon name="eye" size={12} />View</button></td><td className="p-2"><div className="font-medium truncate max-w-[420px]" title={file.path}>{file.name}</div><div className="mono truncate max-w-[420px] text-[9px]" style={{ color: "var(--faint)" }}>{file.path}</div></td><td className="p-2">{file.category}</td><td className="p-2 text-right mono">{fmtBytes(file.size)}</td><td className="p-2 whitespace-nowrap">{fmtDate(file.mtime * 1000)}</td><td className="p-2">{file.broken_kind ? <span style={{ color: "var(--danger)" }}>{file.broken_kind}</span> : <span style={{ color: "var(--success)" }}>{file.status}</span>}</td></tr>)}</tbody></table><div className="flex items-center justify-end gap-2 pt-3"><button className="btn btn-xs" onClick={() => setPage(Math.max(0, page - 1))} disabled={page === 0}>Previous</button><span className="mono text-[10px]">{page + 1} / {pageCount}</span><button className="btn btn-xs" onClick={() => setPage(Math.min(pageCount - 1, page + 1))} disabled={page + 1 >= pageCount}>Next</button></div></div>}
     </Section>
     {previewFile && <FilePreview file={previewFile} src={`/api/files/${previewFile.id}/preview`} downloadUrl={`/api/files/${previewFile.id}/preview?download=true`} openExternal={() => api(`/api/files/${previewFile.id}/open`, { method: "POST" }).then(() => undefined)} onClose={() => setPreviewFile(null)} />}

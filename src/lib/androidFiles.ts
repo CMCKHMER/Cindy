@@ -14,7 +14,7 @@ export interface FileAccessPlugin {
   scan(): Promise<{ files: AndroidFile[]; duplicates: AndroidDuplicateGroup[]; done: number }>;
   preview(options: { id: number }): Promise<{ mime: string; base64: string }>;
   openExternal(options: { id: number }): Promise<{ opened: boolean }>;
-  apply(options: { action: "delete" | "archive" | "move" | "rename"; items: { id: number; name?: string }[] }): Promise<{ count: number; label: string }>;
+  apply(options: { action: "delete" | "archive" | "move" | "rename" | "permanent_delete"; items: { id: number; name?: string }[] }): Promise<{ count: number; label: string; failed?: number; failureDetails?: string[] }>;
   undoLatest(): Promise<{ undone: boolean; label?: string }>;
   addListener(eventName: "scanProgress", listenerFunc: (event: { done: number; total: number; current: string }) => void): Promise<{ remove: () => Promise<void> }>;
 }

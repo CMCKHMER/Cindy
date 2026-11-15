@@ -60,7 +60,7 @@ export default function LiveAndroid() {
   const totalBytes = files.reduce((sum, file) => sum + file.size, 0);
   const dupBytes = groups.reduce((sum, group) => sum + (group.files[0]?.size ?? 0) * (group.files.length - 1), 0);
 
-  const apply = async (action: "delete" | "archive" | "move" | "rename") => {
+  const apply = async (action: "delete" | "archive" | "move" | "rename" | "permanent_delete") => {
     if (!selectedFiles.length) return;
     let items: { id: number; name?: string }[] = selectedFiles.map(file => ({ id: file.id }));
     if (action === "rename") {
@@ -70,14 +70,18 @@ export default function LiveAndroid() {
       }).filter((item): item is { id: number; name: string } => !!item);
       if (!items.length) return;
     }
-    const actionLabel = action === "delete" ? "move selected files into the recoverable Sasha Maid Trash folder" : action === "archive" ? "move selected files into Sasha Maid Review" : action === "move" ? "organize selected files into category folders" : "rename selected files";
-    if (!window.confirm(`Approve this action: ${actionLabel}? You can use Undo latest to reverse it.`)) return;
+    const irreversible = action === "permanent_delete";
+    const actionLabel = action === "delete" ? "move selected files into the recoverable Sasha Maid Trash folder" : action === "archive" ? "move selected files into Sasha Maid Review" : action === "move" ? "organize selected files into category folders" : action === "rename" ? "rename selected files" : `permanently delete ${selectedFiles.length} file(s), with no trash copy or backup`;
+    const names = selectedFiles.slice(0, 6).map(file => `• ${file.name}`).join("\n");
+    const more = selectedFiles.length > 6 ? `\\n…and ${selectedFiles.length - 6} more` : "";
+    if (!window.confirm(`Approve this action: ${actionLabel}?${irreversible ? `\\n\\n${names}${more}\\n\\nThis cannot be undone.` : " You can use Undo latest to reverse it."}`)) return;
+    if (irreversible && window.prompt('Type DELETE PERMANENTLY to confirm:') !== "DELETE PERMANENTLY") return;
     setBusy(true); setError(""); setNotice("");
     try {
       const result = await AndroidFiles.apply({ action, items });
       const rescanned = await AndroidFiles.scan();
       setFiles(rescanned.files); setGroups(rescanned.duplicates); setSelected([]);
-      setNotice(`${result.label}.`);
+      setNotice(`${result.label}.${result.failed ? ` ${result.failed} file(s) could not be permanently deleted: ${(result.failureDetails ?? []).join("; ")}` : irreversible ? " This cannot be undone." : ""}`);
     } catch (cause) { setError(errorMessage(cause)); }
     finally { setBusy(false); }
   };
@@ -113,7 +117,7 @@ export default function LiveAndroid() {
     {error && <div className="card p-3 text-[12px]" style={{ borderColor: "var(--danger)", color: "var(--danger)" }} role="alert">{error}</div>}
     {notice && <div className="card p-3 text-[12px]" style={{ borderColor: "var(--success)", color: "var(--success)" }} role="status">{notice}</div>}
 
-    <Section title="Folders on this device" sub="Android asks you to choose each folder. Sasha Maid keeps access only to folders you approve, using the system folder picker." right={<Chip color="var(--success)"><Icon name="shield" size={11} />Android folder access</Chip>}>
+    <Section title="Folders on this device" sub="Android asks you to choose each folder. Credential/config folders are skipped; Sasha never decides files are unnecessary automatically." right={<Chip color="var(--success)"><Icon name="shield" size={11} />Android folder access</Chip>}>
       <div className="flex flex-wrap gap-2">
         <button className="btn btn-primary btn-sm" onClick={() => void addFolder()} disabled={busy}><Icon name="folder" size={13} />Choose folder</button>
         <button className="btn btn-sm" onClick={() => void scan()} disabled={busy || roots.length === 0}><Icon name="scan" size={13} />{busy ? "Working…" : "Scan folders"}</button>
@@ -134,7 +138,7 @@ export default function LiveAndroid() {
 
     <Section title="Files on this device" sub="Only user-selected folders appear here. Android may limit operations on cloud-backed or read-only providers." right={<span className="mono text-[10px]" style={{ color: "var(--muted)" }}>{visible.length.toLocaleString()} files</span>}>
       <div className="flex flex-wrap gap-2 mb-3"><input className="field flex-1 min-w-[180px] text-[12px]" value={query} onChange={event => setQuery(event.target.value)} placeholder="Search names and paths" aria-label="Search files" /></div>
-      {selected.length > 0 && <div className="flex flex-wrap items-center gap-2 mb-3 inset p-2.5"><span className="text-[11px] flex-1">{selected.length} selected</span><button className="btn btn-xs" onClick={() => void apply("rename")} disabled={busy}>Rename</button><button className="btn btn-xs" onClick={() => void apply("move")} disabled={busy}>Organize</button><button className="btn btn-xs" onClick={() => void apply("archive")} disabled={busy}>Move to Review</button><button className="btn btn-xs btn-danger" onClick={() => void apply("delete")} disabled={busy}>Trash</button></div>}
+      {selected.length > 0 && <div className="flex flex-wrap items-center gap-2 mb-3 inset p-2.5"><span className="text-[11px] flex-1">{selected.length} selected</span><button className="btn btn-xs" onClick={() => void apply("rename")} disabled={busy}>Rename</button><button className="btn btn-xs" onClick={() => void apply("move")} disabled={busy}>Organize</button><button className="btn btn-xs" onClick={() => void apply("archive")} disabled={busy}>Move to Review</button><button className="btn btn-xs btn-danger" onClick={() => void apply("delete")} disabled={busy}>Trash</button><button className="btn btn-xs btn-danger" onClick={() => void apply("permanent_delete")} disabled={busy}>Delete permanently</button></div>}
       {!files.length ? <div className="py-8 text-center text-[12px]" style={{ color: "var(--muted)" }}>Choose a folder and scan to list files.</div> : <div className="overflow-x-auto"><table className="w-full text-left text-[11px] min-w-[580px]"><thead><tr className="label"><th className="p-2"><input type="checkbox" aria-label="Select all visible files" checked={!!visible.length && selected.length === visible.length} onChange={toggleAll} /></th><th className="p-2">Preview</th><th className="p-2">Name</th><th className="p-2">Category</th><th className="p-2 text-right">Size</th><th className="p-2">Modified</th></tr></thead><tbody>{visible.map(file => <tr key={file.id} className="border-t" style={{ borderColor: "var(--line)" }}><td className="p-2"><input type="checkbox" checked={selected.includes(file.id)} onChange={() => setSelected(current => current.includes(file.id) ? current.filter(id => id !== file.id) : [...current, file.id])} aria-label={`Select ${file.name}`} /></td><td className="p-2"><button className="btn btn-xs" onClick={() => void openPreview(file)} disabled={busy} aria-label={`Preview ${file.name}`}><Icon name="eye" size={12} />View</button></td><td className="p-2"><div className="font-medium break-all max-w-[420px]">{file.name}</div><div className="mono break-all max-w-[420px] text-[9px]" style={{ color: "var(--faint)" }}>{file.path}</div></td><td className="p-2">{file.category}</td><td className="p-2 text-right mono whitespace-nowrap">{fmtBytes(file.size)}</td><td className="p-2 whitespace-nowrap">{fmtDate(file.mtime * 1000)}</td></tr>)}</tbody></table></div>}
     </Section>
     {preview && <FilePreview file={preview.file} src={preview.src} downloadUrl={preview.src} textContent={preview.textContent} sourceError={preview.sourceError} openExternal={() => AndroidFiles.openExternal({ id: preview.file.id }).then(() => undefined)} onClose={() => setPreview(null)} />}

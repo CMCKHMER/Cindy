@@ -20,19 +20,20 @@ checks hash the selected files. Approved rename, organize, review, and trash
 operations use Android document-provider actions; Trash is a recoverable folder
 inside the selected root, and Undo reverses the latest recorded action.
 
-To build and install a debug APK, install **Android Studio**, its Android SDK
-(compile SDK 36), and **JDK 21**, then from this repository run:
+To build and install on an Android device, install **Android Studio**, its
+Android SDK (compile SDK 36 and platform tools), and **JDK 21**. Enable USB
+debugging and connect the device, then from this repository run:
 
 ```bash
 npm ci
-npm run android:apk
+npm run android:install
 ```
 
-The APK is written to
+That builds and installs the debug app through ADB. To build an APK for manual
+sideloading instead, run `npm run android:apk`; it is written to
 `android/app/build/outputs/apk/debug/app-debug.apk`. Open the project in Android
-Studio with `npm run android:open` to create a signed release build or install
-to a connected device. `npm run android:sync` rebuilds the web UI and copies it
-into the Android project.
+Studio with `npm run android:open` to create a signed release build. The
+`android:sync` command rebuilds the web UI and copies it into the Android project.
 
 Android file providers vary: cloud-backed, read-only, or third-party providers
 may not support every rename/move operation. The app reports provider failures
@@ -130,10 +131,14 @@ also download the launcher for your OS.
 
 ## Safety contract
 
-- No automatic deletion, overwrite or rename — every destructive action opens an
-  approval dialog and needs a single-use token.
-- Batches run as `backup → apply → journal`; every operation has an undo entry
-  that restores files *and* review state.
+- Nothing is deleted, overwritten, or renamed automatically. Ordinary destructive
+  actions require explicit approval and a single-use token.
+- Permanent delete is a separate, typed-phrase action: it creates no backup/trash
+  copy and cannot be undone in Sasha Maid (it is not a secure disk-wipe guarantee).
+- OS-critical, credential, and system/app-configuration paths are excluded from
+  scans and mutations. Sasha never assumes a file is “not needed”; the user chooses.
+- Reversible batches run as `backup → apply → journal`; undo restores files and
+  review state.
 - OS-critical paths (`C:\Windows`, `/System`, `/usr`, `/etc`, `/boot`, …) are
   rejected before any worker starts.
 - Inference is local (ONNX Runtime). Dropped files are hashed with WebCrypto in
