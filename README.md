@@ -1,10 +1,43 @@
 # Sasha Maid · AI File Organizer Agent
 
 **Your desktop, tidied.** Sasha Maid is a local-first file librarian for
-**Windows, macOS and Linux**. She scans folders recursively, classifies files by
-content and metadata, groups exact / near / visual duplicates, catches damaged
+**Windows, macOS, Linux and Android**. On Android, the app uses the system folder
+picker and only accesses folders you explicitly grant. She scans folders
+recursively, classifies files by content and metadata, groups exact / near /
+visual duplicates, catches damaged
 files, writes descriptive image names and builds a cleanup plan — then waits for
 your approval before touching anything.
+
+---
+
+## Android app (APK)
+
+The Android app wraps the same interface in Capacitor and uses Android's Storage
+Access Framework (SAF) for real file access. No Python server, broad storage
+permission, or `MANAGE_EXTERNAL_STORAGE` permission is used. Android asks you to
+pick each folder; only those granted locations are scanned. Exact duplicate
+checks hash the selected files. Approved rename, organize, review, and trash
+operations use Android document-provider actions; Trash is a recoverable folder
+inside the selected root, and Undo reverses the latest recorded action.
+
+To build and install a debug APK, install **Android Studio**, its Android SDK
+(compile SDK 36), and **JDK 21**, then from this repository run:
+
+```bash
+npm ci
+npm run android:apk
+```
+
+The APK is written to
+`android/app/build/outputs/apk/debug/app-debug.apk`. Open the project in Android
+Studio with `npm run android:open` to create a signed release build or install
+to a connected device. `npm run android:sync` rebuilds the web UI and copies it
+into the Android project.
+
+Android file providers vary: cloud-backed, read-only, or third-party providers
+may not support every rename/move operation. The app reports provider failures
+instead of silently pretending the operation succeeded. Scanning large files
+for exact duplicates can use significant time and battery.
 
 ---
 

@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">Sasha Maid</string>
+    <string name="title_activity_main">Sasha Maid</string>
+    <string name="package_name">com.cmckhmer.sashamaid</string>
+    <string name="custom_url_scheme">com.cmckhmer.sashamaid</string>
+</resources>
