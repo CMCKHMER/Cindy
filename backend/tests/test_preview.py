@@ -55,3 +55,24 @@ def test_unknown_type_is_download_only(tmp_path, monkeypatch):
     assert download.status_code == 200
     assert download.content == b"PK\x03\x04data"
     assert download.headers["content-disposition"].startswith("attachment;")
+
+
+def test_open_uses_default_desktop_viewer(tmp_path, monkeypatch):
+    client, file_path = client_with_file(tmp_path, monkeypatch, name="clip.mp4", body=b"video")
+    called = []
+    monkeypatch.setenv("DISPLAY", ":0")
+    monkeypatch.setattr(main.shutil, "which", lambda command: "/usr/bin/xdg-open" if command == "xdg-open" else None)
+    monkeypatch.setattr(main.subprocess, "Popen", lambda command, **kwargs: called.append(command))
+    with client:
+        response = client.post("/api/files/1/open")
+    assert response.status_code == 200
+    assert response.json()["opened"] is True
+    assert called == [["/usr/bin/xdg-open", str(file_path)]]
+
+
+def test_open_refuses_installers(tmp_path, monkeypatch):
+    client, _ = client_with_file(tmp_path, monkeypatch, name="danger.appimage", body=b"not executable")
+    with client:
+        response = client.post("/api/files/1/open")
+    assert response.status_code == 415
+    assert "cannot be launched" in response.json()["detail"]

@@ -15,6 +15,9 @@ import io
 import json
 import mimetypes
 import os
+import platform
+import shutil
+import subprocess
 import time
 from urllib.parse import quote
 from pathlib import Path
@@ -210,9 +213,7 @@ PREVIEW_EXTENSIONS = {
 }
 
 
-@app.get("/api/files/{file_id}/preview")
-def preview_file(file_id: int, request: Request, download: bool = False):
-    """Stream a selected indexed file for an inline preview, including audio/video byte ranges."""
+def indexed_file_path(file_id: int):
     row = store.db.execute(
         """SELECT f.path, f.name, f.ext, f.status, r.path AS root_path
            FROM files f JOIN roots r ON r.id=f.root_id WHERE f.id=?""", (file_id,)
@@ -228,7 +229,13 @@ def preview_file(file_id: int, request: Request, download: bool = False):
         raise HTTPException(404, "The file is no longer available in its indexed folder.")
     if not path.is_file():
         raise HTTPException(404, "File not found.")
+    return row, path
 
+
+@app.get("/api/files/{file_id}/preview")
+def preview_file(file_id: int, request: Request, download: bool = False):
+    """Stream a selected indexed file for an inline preview, including audio/video byte ranges."""
+    row, path = indexed_file_path(file_id)
     ext = (row["ext"] or path.suffix.lstrip(".")).lower()
     preview_kind = next((kind for kind, extensions in PREVIEW_EXTENSIONS.items() if ext in extensions), None)
     if not download and preview_kind is None:
@@ -297,6 +304,41 @@ def preview_file(file_id: int, request: Request, download: bool = False):
                 yield chunk
 
     return StreamingResponse(stream_file(), status_code=status_code, media_type=media_type, headers=headers)
+
+
+@app.post("/api/files/{file_id}/open")
+def open_file_in_system_app(file_id: int):
+    """Open a user-selected indexed file with the OS default viewer/player."""
+    _, path = indexed_file_path(file_id)
+    ext = path.suffix.lower()
+    if ext in {
+        ".exe", ".msi", ".com", ".bat", ".cmd", ".deb", ".rpm", ".appimage",
+        ".desktop", ".apk", ".dmg", ".pkg", ".jar", ".sh", ".bash", ".py",
+        ".js", ".mjs", ".cjs", ".ps1", ".vbs", ".command", ".app",
+    }:
+        raise HTTPException(415, "For safety, executable and installer files cannot be launched from Sasha Maid.")
+    try:
+        if os.name == "nt":
+            os.startfile(str(path))  # type: ignore[attr-defined]
+        elif platform.system() == "Darwin":
+            opener = shutil.which("open")
+            if not opener:
+                raise FileNotFoundError("The macOS 'open' command is unavailable.")
+            subprocess.Popen([opener, str(path)], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                             stderr=subprocess.DEVNULL, start_new_session=True)
+        else:
+            if not (os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")):
+                raise HTTPException(409, "No graphical desktop session is available to open this file.")
+            opener = shutil.which("xdg-open")
+            if not opener:
+                raise FileNotFoundError("xdg-open is not installed. Install xdg-utils and try again.")
+            subprocess.Popen([opener, str(path)], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                             stderr=subprocess.DEVNULL, start_new_session=True)
+    except HTTPException:
+        raise
+    except OSError as exc:
+        raise HTTPException(503, f"Could not open this file in the system app: {exc}")
+    return {"opened": True, "name": path.name}
 
 
 @app.get("/api/duplicates")

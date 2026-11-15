@@ -26,6 +26,7 @@ import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
 import java.security.MessageDigest;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
@@ -249,6 +250,38 @@ public class FileAccessPlugin extends Plugin {
             } catch (Exception error) {
                 call.reject("Could not preview file: " + error.getMessage(), "PREVIEW_FAILED", error);
             }
+        });
+    }
+
+    @PluginMethod
+    public void openExternal(PluginCall call) {
+        Integer id = call.getInt("id");
+        if (id == null) { call.reject("A scanned file id is required."); return; }
+        worker.execute(() -> {
+            ScannedFile file = scanned.get(id);
+            if (file == null) { call.reject("Scan this folder again before opening the file."); return; }
+            String extension = file.name.contains(".") ? file.name.substring(file.name.lastIndexOf('.') + 1).toLowerCase(Locale.ROOT) : "";
+            if (Arrays.asList("exe", "msi", "com", "bat", "cmd", "deb", "rpm", "appimage", "desktop", "apk", "dmg", "pkg", "jar", "sh", "bash", "py", "js", "mjs", "cjs", "ps1", "vbs", "command", "app").contains(extension)) {
+                call.reject("For safety, executable and installer files cannot be launched from Sasha Maid."); return;
+            }
+            String mime = file.mime;
+            if (mime == null || mime.isEmpty() || "application/octet-stream".equals(mime)) {
+                String extension = file.name.contains(".") ? file.name.substring(file.name.lastIndexOf('.') + 1).toLowerCase(Locale.ROOT) : "";
+                String guessed = MimeTypeMap.getSingleton().getMimeTypeFromExtension(extension);
+                mime = guessed == null ? "*/*" : guessed;
+            }
+            final String resolvedMime = mime;
+            getActivity().runOnUiThread(() -> {
+                try {
+                    Intent view = new Intent(Intent.ACTION_VIEW);
+                    view.setDataAndType(file.uri, resolvedMime);
+                    view.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+                    getActivity().startActivity(Intent.createChooser(view, "Open " + file.name));
+                    call.resolve(new JSObject().put("opened", true));
+                } catch (Exception error) {
+                    call.reject("No Android app could open this file: " + error.getMessage(), "OPEN_FAILED", error);
+                }
+            });
         });
     }
 
