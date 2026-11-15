@@ -1,37 +1,158 @@
-# Cindy — Local File Organizer
+# Sasha Maid · AI File Organizer Agent
 
-Cindy scans a folder you explicitly select in your browser, finds exact duplicate files, and can rename, delete, or sort files into type-based folders. Files stay on your device; Cindy does not upload them.
+**Your desktop, tidied.** Sasha Maid is a local-first file librarian for
+**Windows, macOS and Linux**. She scans folders recursively, classifies files by
+content and metadata, groups exact / near / visual duplicates, catches damaged
+files, writes descriptive image names and builds a cleanup plan — then waits for
+your approval before touching anything.
 
-## Run locally
+---
 
-```sh
-npm ci
-npm run dev
+## Get it working on your desktop
+
+You need **Python 3.10+** (3.12 recommended). Node.js is optional: if it is
+missing, Sasha uses the interface bundle already in `dist/`.
+
+### Windows
+
+1. Install Python once: `winget install Python.Python.3.12`
+2. Double-click **`Start Sasha Maid.bat`** in this folder.
+
+That is it. Prefer a terminal?
+
+```powershell
+py -3 scripts\desktop_setup.py
 ```
 
-Open the local URL printed by Vite. Type checking and production build:
+### macOS
 
-```sh
-npm run typecheck
+```bash
+brew install python@3.12                       # once
+chmod +x "Start Sasha Maid.command" start-sasha-maid.sh
+xattr -d com.apple.quarantine "Start Sasha Maid.command" 2>/dev/null
+```
+
+Then double-click **`Start Sasha Maid.command`**, or run:
+
+```bash
+python3 scripts/desktop_setup.py
+```
+
+### Linux
+
+```bash
+sudo apt install python3 python3-venv libgl1 libegl1 libxkbcommon-x11-0
+chmod +x start-sasha-maid.sh
+./start-sasha-maid.sh
+```
+
+### What the setup command does
+
+| Step | Action |
+| --- | --- |
+| 1 | Creates an isolated `.venv` (nothing installed system-wide) |
+| 2 | Installs FastAPI, Pillow, ONNX Runtime, faiss and the Qt desktop shell |
+| 3 | Builds the UI with Vite, or reuses `dist/index.html` if Node is absent |
+| 4 | Opens the native window and starts the local service on `127.0.0.1:8765` |
+
+Later runs are fast — the environment is cached, so the launcher just opens the
+app. Closing the window hides Sasha to the **system tray**; right-click the tray
+icon to quit. If Qt WebEngine is unavailable, add `--browser` and the identical
+interface opens in your default browser.
+
+```bash
+python3 scripts/desktop_setup.py --launch     # skip setup, just open
+python3 scripts/desktop_setup.py --browser    # serve locally, open a browser
+python3 scripts/desktop_setup.py --package    # build a native bundle
+```
+
+`--package` produces `dist/SashaMaid-Setup.exe`, `dist/SashaMaid-macOS.app` or
+`dist/SashaMaid-x86_64` — a self-contained app you can pin to the taskbar or Dock.
+
+### Where Sasha keeps things
+
+| | Windows | macOS / Linux |
+| --- | --- | --- |
+| Index & journal | `%USERPROFILE%\.sasha\sasha.db` | `~/.sasha/sasha.db` |
+| Backups | `%USERPROFILE%\.sasha\backups\` | `~/.sasha/backups/` |
+| Review folder | `%USERPROFILE%\.sasha\review\` | `~/.sasha/review/` |
+| Desktop log | `%USERPROFILE%\.sasha\desktop.log` | `~/.sasha/desktop.log` |
+
+Set `SASHA_HOME` to move all of it, or `SASHA_PORT` if 8765 is taken (Sasha also
+tries 8766–8772 automatically).
+
+### Troubleshooting
+
+- **“python is not recognised”** — reinstall Python with *Add python.exe to PATH*,
+  or use the `.bat` launcher, which finds `py -3` for you.
+- **Stuck on the loading ring** — the reason is in `~/.sasha/desktop.log`.
+- **No Qt WebEngine** — run with `--browser`.
+- **Locked-down machine** — use Docker (below) and open `http://localhost:8765`.
+
+The same instructions are inside the app under **Run on desktop**, where you can
+also download the launcher for your OS.
+
+---
+
+## Safety contract
+
+- No automatic deletion, overwrite or rename — every destructive action opens an
+  approval dialog and needs a single-use token.
+- Batches run as `backup → apply → journal`; every operation has an undo entry
+  that restores files *and* review state.
+- OS-critical paths (`C:\Windows`, `/System`, `/usr`, `/etc`, `/boot`, …) are
+  rejected before any worker starts.
+- Inference is local (ONNX Runtime). Dropped files are hashed with WebCrypto in
+  the browser and never uploaded.
+
+## Other ways to run it
+
+```bash
+# web workspace only (interactive local index, seeded library)
+npm install && npm run dev
+
+# Native desktop app + live filesystem service
+./start-sasha-maid.sh
+
+# Build a portable Linux desktop bundle
+python3 scripts/desktop_setup.py --package
+
+# Or run the local API separately (then open the Live disk view)
+pip install -r backend/requirements.txt
 npm run build
+uvicorn backend.main:app --host 127.0.0.1 --port 8765
+
+# containers — only bind-mounted folders are visible
+docker compose up --build
 ```
 
-## Browser support and permissions
+## Project layout
 
-File access uses the browser File System Access API. Use a current Chromium-based browser (Chrome or Edge) on HTTPS or `localhost`. Other browsers may not offer folder selection or write access. Choose a folder in Cindy; the browser prompts before access. Cindy requests read/write access only when you choose a file-changing action. Folder handles are kept in memory for the current page session and are not uploaded or saved by Cindy.
+- `src/` — React + Vite + Tailwind UI: seeded demo workspace plus a separate
+  **Live disk** screen connected to the local API for real scans, duplicate review,
+  approved file operations, and undo; also analytics, explorer, reports and settings.
+- `src/lib/engine.ts` — classification, naming, SHA-256 / pHash / text similarity,
+  natural-language intents, benchmark, live diagnostics.
+- `src/state/store.tsx` — operation journal, reversible patches, resumable scan,
+  watchdog events, imports, persistence.
+- `src/lib/export.ts` — real CSV / JSON downloads and a dependency-free PDF writer.
+- `backend/organizer.py` — filesystem engine, protected-path guard, chunked
+  hashing, Pillow pHash, integrity checks, backups, undo.
+- `backend/main.py` — FastAPI REST + WebSocket API with approval tokens.
+- `backend/schema.sql` — WAL SQLite schema with FTS5 and scan checkpoints.
+- `desktop/app.py` — PySide6 shell: readiness wait, tray icon, graceful shutdown.
+- `scripts/desktop_setup.py` — the one-command setup and launcher.
 
-## What the scan does
+## Tests
 
-- Recursively lists file names, sizes, modified dates, and extension-based categories.
-- Checks exact duplicates by SHA-256, but only hashes files sharing a size and no larger than 100 MB. Larger candidates are skipped to avoid excessive memory use.
-- Flags zero-byte files for review. An empty file is not necessarily damaged.
-- Does not infer image contents or claim to repair corrupted files.
+```bash
+node scripts/smoke.cjs        # runtime checks against the production bundle (needs jsdom)
+pytest backend/tests -q       # engine, safety, dedupe, integrity, resume, undo
+```
 
-## File operations
+Inside the app: **Developer → Tests → Run diagnostics** executes the real
+classification, naming, safety, similarity and NLP functions.
 
-- **Rename** prompts for a new name and refuses an existing file name.
-- **Delete** requires confirmation and permanently removes the selected file.
-- **Keep oldest, delete copies** requires confirmation and permanently removes the other exact copies.
-- **Organize** previews the plan, then copies each file to its category folder and removes the original only after the copy completes. Name collisions receive a numbered suffix.
-
-The browser may ask you to grant write permission. Keep a separate backup of important files before making changes; deletes cannot be undone.
+Reports are available from **Undo & Reports** as PDF, CSV and JSON: files moved
+and renamed, duplicate groups and members, damaged files, storage saved, the
+safety policy and the full operation journal.

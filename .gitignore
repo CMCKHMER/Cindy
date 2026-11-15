@@ -1,5 +1,14 @@
 node_modules/
+.venv/
+__pycache__/
+.pytest_cache/
+.coverage
+.coverage.*
 .next/
 dist/
 build/
+backend/static/
 *.log
+*.spec
+SashaMaid-*/
+*.egg-info/

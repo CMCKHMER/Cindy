@@ -1,0 +1,55 @@
+# Sasha Maid configuration. Safety values are also enforced in backend/organizer.py.
+[agent]
+threads = 4
+memory_mb = 512
+hash_chunk_kb = 1024
+incremental = true
+follow_symlinks = false
+watch = true
+local_only = true
+
+[safety]
+require_approval = true       # cannot be disabled
+never_delete_automatically = true
+never_overwrite = true
+never_rename_without_approval = true
+create_backups = true
+backup_retention_days = 30
+protected_paths = ["C:\\Windows", "C:\\Program Files", "/System", "/usr", "/etc", "/boot"]
+
+[models]
+vision = "clip-vit-b32"
+caption = "blip-caption-base"
+ocr = "paddle-ocr-v4"
+similarity_visual = 0.92
+similarity_near_text = 0.88
+
+[[roots]]
+path = "~/Downloads"
+recursive = true
+watch = true
+
+[[roots]]
+path = "~/Pictures"
+recursive = true
+watch = true
+
+[[roots]]
+path = "~/Documents"
+recursive = true
+watch = false
+
+[[rules]]
+match = "*.crdownload"
+target = "Downloads/Partial"
+enabled = true
+
+[[rules]]
+match = "/invoice|receipt/"
+target = "Documents/PDF"
+enabled = true
+
+[[rules]]
+match = "screenshot"
+target = "Media/Images/Screenshots"
+enabled = true
