@@ -32,10 +32,30 @@ PROTECTED = [
     "/System", "/usr", "/bin", "/sbin", "/etc", "/boot", "/dev", "/proc",
     "/Library/Extensions", "/Applications",
 ]
+SENSITIVE_DIR_NAMES = {
+    ".ssh", ".gnupg", ".config", ".local", ".aws", ".azure", ".kube", ".docker",
+    ".password-store", ".pki", ".git", ".venv", "venv", "node_modules", "appdata", "programdata",
+}
+SENSITIVE_FILE_NAMES = {
+    ".env", ".bashrc", ".bash_profile", ".zshrc", ".profile", ".netrc", ".git-credentials",
+    "id_rsa", "id_ed25519", "authorized_keys", "known_hosts", "credentials.json",
+}
 
 
 class ProtectedPathError(PermissionError):
     """Raised when a caller tries to touch an OS-critical directory."""
+
+
+def is_sensitive_path(path: str | Path) -> bool:
+    """Protect OS/user credentials and app/config trees, even when a parent is scanned."""
+    p = Path(path)
+    parts = [part.lower() for part in p.parts]
+    name = p.name.lower()
+    return (
+        any(part in SENSITIVE_DIR_NAMES for part in parts)
+        or name in SENSITIVE_FILE_NAMES
+        or name.startswith(".env.")
+    )
 
 
 def guard(path: str | Path) -> Path:
@@ -45,6 +65,8 @@ def guard(path: str | Path) -> Path:
         b = bad.replace("\\", "/").lower()
         if s == b or s.startswith(b + "/"):
             raise ProtectedPathError(f"{p} is OS-critical and can never be modified")
+    if is_sensitive_path(p):
+        raise ProtectedPathError(f"{p} is a protected system, configuration, or credential path")
     return p
 
 
@@ -281,21 +303,46 @@ class Store:
 
     # -- scanning ---------------------------------------------------------- #
     def walk(self, root: Path, recursive: bool = True) -> Iterator[Path]:
-        guard(root)
-        it = root.rglob("*") if recursive else root.glob("*")
+        root = guard(root)
         private_home = self.cfg.home.resolve()
-        for p in it:
+
+        def safe_file(path: Path) -> bool:
             try:
-                if p.is_symlink() or not p.is_file():
-                    continue
-                # Do not index Cindy/Sasha's own database, backups or review files
-                # when the user scans a parent such as their home directory.
-                resolved = p.resolve()
-                if resolved == private_home or private_home in resolved.parents:
-                    continue
-                yield p
+                if path.is_symlink() or not path.is_file():
+                    return False
+                resolved = path.resolve()
+                return (
+                    resolved != private_home
+                    and private_home not in resolved.parents
+                    and not is_sensitive_path(resolved)
+                )
             except OSError:
-                continue
+                return False
+
+        if not recursive:
+            try:
+                for path in root.iterdir():
+                    if safe_file(path):
+                        yield path
+            except OSError:
+                return
+            return
+
+        # Top-down walking lets Sasha prune private/system configuration trees
+        # instead of traversing their contents and merely hiding them later.
+        for current, directories, filenames in os.walk(root, topdown=True, followlinks=False):
+            parent = Path(current)
+            directories[:] = [
+                name for name in directories
+                if not (parent / name).is_symlink()
+                and not is_sensitive_path(parent / name)
+                and (parent / name).resolve() != private_home
+                and private_home not in (parent / name).resolve().parents
+            ]
+            for name in filenames:
+                path = parent / name
+                if safe_file(path):
+                    yield path
 
     def index_file(self, root_id: int, path: Path, rules=()) -> dict:
         meta = classify(path.name, str(path.parent), rules)
@@ -359,7 +406,7 @@ class Store:
     # -- duplicate detection ----------------------------------------------- #
     def duplicates(self) -> list[dict]:
         groups: list[dict] = []
-        rows = self.db.execute("SELECT * FROM files WHERE status NOT IN ('deleted','delete','archive','archived')").fetchall()
+        rows = self.db.execute("SELECT * FROM files WHERE status NOT IN ('deleted','delete','archive','archived','permanently_deleted')").fetchall()
         by_hash: dict[str, list] = {}
         for r in rows:
             by_hash.setdefault(r["sha256"], []).append(r)
@@ -461,10 +508,80 @@ class Store:
         self.log("success", kind, f"{label or kind}: {len(rows)} files, backup {backup}")
         return {"op_id": op_id, "files": len(rows), "backup": str(backup)}
 
+    def permanently_delete(self, file_ids: list[int], *, approval_token: str | None) -> dict:
+        """Irreversibly unlink approved indexed files, without trash or a backup copy."""
+        if self.cfg.require_approval and not approval_token:
+            raise PermissionError("approval_required: permanent deletion needs explicit user approval")
+        ids = list(dict.fromkeys(file_ids))
+        if not ids:
+            raise ValueError("Select at least one file.")
+
+        candidates: list[tuple[sqlite3.Row, Path]] = []
+        failures: list[dict] = []
+        for file_id in ids:
+            row = self.db.execute("SELECT * FROM files WHERE id=?", (file_id,)).fetchone()
+            if not row:
+                failures.append({"id": file_id, "name": "unknown file", "error": "File is not indexed."})
+                continue
+            try:
+                if row["status"] != "indexed":
+                    raise ValueError("Only currently indexed files can be permanently deleted.")
+                raw_path = Path(row["path"]).expanduser()
+                if raw_path.is_symlink():
+                    raise ProtectedPathError("Symbolic links are protected.")
+                path = guard(raw_path)
+                root_row = self.db.execute("SELECT path FROM roots WHERE id=?", (row["root_id"],)).fetchone()
+                if not root_row:
+                    raise ValueError("The registered folder no longer exists.")
+                root = Path(root_row["path"]).resolve(strict=True)
+                path.relative_to(root)
+                if not path.is_file():
+                    raise FileNotFoundError("The indexed file is missing or is not a regular file.")
+                candidates.append((row, path))
+            except (OSError, ValueError, ProtectedPathError) as exc:
+                failures.append({"id": file_id, "name": row["name"], "error": str(exc)})
+
+        if not candidates:
+            return {"op_id": None, "files": 0, "deleted": [], "failed": failures, "irreversible": True}
+
+        total_bytes = sum(max(0, int(row["size"] or 0)) for row, _ in candidates)
+        cursor = self.db.execute(
+            "INSERT INTO operations(kind,label,detail,bytes,backup_path) VALUES(?,?,?,?,?)",
+            ("permanent_delete", f"Permanently deleted {len(candidates)} file(s)",
+             "Irreversible: files were unlinked without a backup or trash copy.", total_bytes, ""),
+        )
+        op_id = cursor.lastrowid
+        self.db.commit()
+        deleted: list[str] = []
+        for row, path in candidates:
+            try:
+                if Path(row["path"]).is_symlink():
+                    raise ProtectedPathError("File became a symbolic link; refusing to unlink it.")
+                path.unlink()
+                before = {"path": str(path), "name": row["name"], "status": row["status"], "backup_path": ""}
+                after = {"path": str(path), "name": row["name"], "status": "permanently_deleted"}
+                self.db.execute("UPDATE files SET status='permanently_deleted' WHERE id=?", (row["id"],))
+                self.db.execute("INSERT INTO operation_patches(op_id,file_id,before,after) VALUES(?,?,?,?)",
+                                (op_id, row["id"], json.dumps(before), json.dumps(after)))
+                self.db.commit()
+                deleted.append(row["name"])
+            except (OSError, ValueError, ProtectedPathError) as exc:
+                failures.append({"id": row["id"], "name": row["name"], "error": str(exc)})
+
+        self.db.execute("UPDATE operations SET detail=? WHERE id=?",
+                        (json.dumps({"irreversible": True, "deleted": deleted, "failed": failures}), op_id))
+        self.db.commit()
+        self.log("danger" if failures else "warn", "permanent_delete",
+                 f"Permanently deleted {len(deleted)} file(s); {len(failures)} failed; no backup created")
+        return {"op_id": op_id, "files": len(deleted), "deleted": deleted,
+                "failed": failures, "irreversible": True}
+
     def undo(self, op_id: int) -> dict:
         op = self.db.execute("SELECT * FROM operations WHERE id=?", (op_id,)).fetchone()
         if not op or op["undone"]:
             raise ValueError("operation not found or already undone")
+        if op["kind"] == "permanent_delete":
+            raise ValueError("permanent deletion has no backup and cannot be undone")
         for patch in self.db.execute("SELECT * FROM operation_patches WHERE op_id=?", (op_id,)):
             before, after = json.loads(patch["before"]), json.loads(patch["after"])
             current, original = Path(after["path"]), Path(before["path"])

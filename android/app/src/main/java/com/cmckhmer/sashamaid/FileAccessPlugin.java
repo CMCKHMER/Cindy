@@ -7,6 +7,7 @@ import android.database.Cursor;
 import android.net.Uri;
 import android.provider.DocumentsContract;
 import android.provider.OpenableColumns;
+import android.text.TextUtils;
 import android.util.Base64;
 import android.webkit.MimeTypeMap;
 
@@ -99,6 +100,11 @@ public class FileAccessPlugin extends Plugin {
         try {
             getContext().getContentResolver().takePersistableUriPermission(tree, flags);
             String name = queryDisplayName(tree);
+            if (isSensitiveName(name)) {
+                getContext().getContentResolver().releasePersistableUriPermission(tree, flags);
+                call.reject("Sasha Maid will not scan protected system, credential, or app-configuration folders.", "PROTECTED_PATH");
+                return;
+            }
             JSONArray roots = savedRoots();
             for (int i = 0; i < roots.length(); i++) {
                 if (tree.toString().equals(roots.optJSONObject(i).optString("uri"))) {
@@ -168,10 +174,11 @@ public class FileAccessPlugin extends Plugin {
                 long modified = cursor.isNull(4) ? 0 : Math.max(0, cursor.getLong(4));
                 Uri child = DocumentsContract.buildDocumentUriUsingTree(tree, documentId);
                 if (DocumentsContract.Document.MIME_TYPE_DIR.equals(mime)) {
-                    if (depth == 0 && (".Sasha Maid Trash".equals(name) || "Sasha Maid Review".equals(name))) continue;
+                    if (isSensitiveName(name) || (depth == 0 && (".Sasha Maid Trash".equals(name) || "Sasha Maid Review".equals(name)))) continue;
                     walk(tree, child, parentPath + "/" + name, out, depth + 1);
                     continue;
                 }
+                if (isSensitiveName(name)) continue;
                 ScannedFile file = new ScannedFile();
                 file.id = nextId++; file.uri = child; file.parent = parent; file.name = name;
                 file.path = parentPath + "/" + name; file.mime = mime == null ? "application/octet-stream" : mime;
@@ -288,23 +295,47 @@ public class FileAccessPlugin extends Plugin {
     @PluginMethod
     public void apply(PluginCall call) {
         String action = call.getString("action", "");
+        boolean irreversible = "permanent_delete".equals(action);
         JSArray requested = call.getArray("items", new JSArray());
         worker.execute(() -> {
             List<JSONObject> completed = new ArrayList<>();
+            List<String> failures = new ArrayList<>();
             try {
                 for (int i = 0; i < requested.length(); i++) {
-                    JSObject item = JSObject.fromJSONObject(requested.getJSONObject(i));
-                    int id = item.getInteger("id");
-                    ScannedFile file = scanned.get(id);
-                    if (file == null) throw new IllegalArgumentException("File selection expired. Scan again before applying actions.");
-                    JSONObject record = applyOne(action, file, item.optString("name", file.name));
-                    completed.add(record);
+                    try {
+                        JSObject item = JSObject.fromJSONObject(requested.getJSONObject(i));
+                        Integer id = item.getInteger("id");
+                        ScannedFile file = id == null ? null : scanned.get(id);
+                        if (file == null) throw new IllegalArgumentException("File selection expired. Scan again before applying actions.");
+                        completed.add(applyOne(action, file, item.optString("name", file.name)));
+                    } catch (Exception itemError) {
+                        if (!irreversible) throw itemError;
+                        failures.add(itemError.getMessage() == null ? "File could not be permanently deleted." : itemError.getMessage());
+                    }
+                }
+                if (completed.isEmpty() && !failures.isEmpty()) {
+                    call.reject("No files were permanently deleted: " + TextUtils.join("; ", failures), "ACTION_FAILED");
+                    return;
                 }
                 JSONArray history = savedHistory();
                 JSONObject op = new JSONObject(); op.put("label", action + " " + completed.size() + " file(s)");
-                op.put("items", new JSONArray(completed)); history.put(op); saveHistory(history);
-                call.resolve(new JSObject().put("count", completed.size()).put("label", op.optString("label")));
+                op.put("irreversible", irreversible); op.put("items", new JSONArray(completed));
+                op.put("failures", new JSONArray(failures)); history.put(op); saveHistory(history);
+                JSObject response = new JSObject().put("count", completed.size()).put("label", op.optString("label"));
+                response.put("failed", failures.size());
+                response.put("failureDetails", new JSArray(failures));
+                call.resolve(response);
             } catch (Exception error) {
+                if (irreversible) {
+                    if (!completed.isEmpty()) try {
+                        JSONArray history = savedHistory();
+                        JSONObject op = new JSONObject(); op.put("label", "Permanent deletion, partial batch");
+                        op.put("irreversible", true); op.put("items", new JSONArray(completed));
+                        op.put("failures", new JSONArray(failures)); history.put(op); saveHistory(history);
+                    } catch (Exception ignored) { }
+                    call.reject("Permanent deletion stopped after removing " + completed.size() + " file(s); removed files cannot be restored. " + error.getMessage(), "PARTIAL_DELETE", error);
+                    return;
+                }
                 Collections.reverse(completed);
                 for (JSONObject record : completed) try { undoRecord(record); } catch (Exception ignored) { }
                 call.reject("File operation failed; completed changes were rolled back where possible: " + error.getMessage(), "ACTION_FAILED", error);
@@ -317,9 +348,13 @@ public class FileAccessPlugin extends Plugin {
         Uri resulting = resolver;
         String resultName = file.name;
         String normalized = action.toLowerCase(Locale.ROOT);
-        if ("rename".equals(normalized)) {
+        if ("permanent_delete".equals(normalized)) {
+            if (!DocumentsContract.deleteDocument(getContext().getContentResolver(), file.uri))
+                throw new IllegalStateException("The storage provider refused permanent deletion.");
+        } else if ("rename".equals(normalized)) {
             String safeName = requestedName.trim();
             if (safeName.isEmpty() || safeName.contains("/") || safeName.contains("\\")) throw new IllegalArgumentException("Enter a valid file name.");
+            if (isSensitiveName(safeName)) throw new SecurityException("That name is reserved for protected system or credential files.");
             if (safeName.equals(file.name)) throw new IllegalArgumentException("The new name must differ from the current name.");
             resulting = DocumentsContract.renameDocument(getContext().getContentResolver(), file.uri, safeName);
             if (resulting == null) throw new IllegalStateException("The selected provider could not rename this file.");
@@ -410,11 +445,13 @@ public class FileAccessPlugin extends Plugin {
         worker.execute(() -> {
             try {
                 JSONArray history = savedHistory();
-                if (history.length() == 0) { call.resolve(new JSObject().put("undone", false)); return; }
-                JSONObject op = history.getJSONObject(history.length() - 1);
+                int opIndex = history.length() - 1;
+                while (opIndex >= 0 && history.getJSONObject(opIndex).optBoolean("irreversible", false)) opIndex--;
+                if (opIndex < 0) { call.resolve(new JSObject().put("undone", false)); return; }
+                JSONObject op = history.getJSONObject(opIndex);
                 JSONArray items = op.getJSONArray("items");
                 for (int i = items.length() - 1; i >= 0; i--) undoRecord(items.getJSONObject(i));
-                history.remove(history.length() - 1); saveHistory(history);
+                history.remove(opIndex); saveHistory(history);
                 call.resolve(new JSObject().put("undone", true).put("label", op.optString("label")));
             } catch (Exception error) { call.reject("Undo failed: " + error.getMessage(), "UNDO_FAILED", error); }
         });
@@ -443,6 +480,15 @@ public class FileAccessPlugin extends Plugin {
 
     private boolean hasExtension(String extensions, String ext) {
         return !ext.isEmpty() && (" " + extensions + " ").contains(" " + ext + " ");
+    }
+
+    private boolean isSensitiveName(String name) {
+        String value = name.toLowerCase(Locale.ROOT);
+        return Arrays.asList(".ssh", ".gnupg", ".config", ".local", ".aws", ".azure", ".kube", ".docker",
+                ".password-store", ".pki", ".git", ".venv", "venv", "node_modules", "appdata", "programdata",
+                ".env", ".bashrc", ".bash_profile", ".zshrc", ".profile", ".netrc", ".git-credentials",
+                "id_rsa", "id_ed25519", "authorized_keys", "known_hosts", "credentials.json").contains(value)
+                || value.startsWith(".env.");
     }
 
     private String queryDisplayName(Uri uri) {
