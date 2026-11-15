@@ -1,0 +1,15 @@
+services:
+  sasha:
+    build: .
+    ports:
+      - "127.0.0.1:8765:8765"
+    environment:
+      SASHA_THREADS: "8"
+      SASHA_LOCAL_ONLY: "1"
+      SASHA_REQUIRE_APPROVAL: "1"
+    volumes:
+      - ./data:/data
+      - ~/Downloads:/library/Downloads
+      - ~/Pictures:/library/Pictures
+      - ~/Documents:/library/Documents
+    restart: unless-stopped
